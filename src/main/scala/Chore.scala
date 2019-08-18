@@ -1,6 +1,7 @@
-import cats.{ Defer, Eq }
-import cats.effect.{ Bracket, ExitCase }
+import cats.Eq
+import cats.effect.{ Sync, ExitCase }
 import scala.annotation.tailrec
+import scala.util.control.NonFatal
 
 sealed trait Chore[+A]
 
@@ -10,20 +11,13 @@ object Chore {
   case class Suspend[A](thunk: () => Chore[A]) extends Chore[A]
 
   @tailrec
-  def undefer[A](fa: Chore[A]): Chore[A] = fa match {
-    case Suspend(thunk) => undefer(thunk())
-    case _ => fa
+  def unsafeRunSync[A](fa: Chore[A]): A = fa match {
+    case Complete(a) => a
+    case Error(e) => throw e
+    case Suspend(thunk) => unsafeRunSync(thunk())
   }
 
-  implicit def eqInstance[A](implicit eqA: Eq[A], eqT: Eq[Throwable]): Eq[Chore[A]] = new Eq[Chore[A]] {
-    def eqv(x: Chore[A], y: Chore[A]): Boolean = (undefer(x), undefer(y)) match {
-      case (Complete(x), Complete(y)) => eqA.eqv(x, y)
-      case (Error(e1), Error(e2)) => eqT.eqv(e1, e2)
-      case _ => false
-    }
-  }
-
-  implicit val bracketInstance: Bracket[Chore, Throwable] with Defer[Chore] = new Bracket[Chore, Throwable] with Defer[Chore] {
+  implicit val syncInstance: Sync[Chore] = new Sync[Chore] {
 
     // MonadError
 
@@ -54,11 +48,6 @@ object Chore {
     def raiseError[A](e: Throwable): Chore[A] = Error(e)
 
 
-    // Defer
-
-    def defer[A](fa: => Chore[A]): Chore[A] = Suspend(() => fa)
-
-
     // Bracket
 
     def bracketCase[A, B](acquire: Chore[A])(use: A => Chore[B])(release: (A, ExitCase[Throwable]) => Chore[Unit]): Chore[B] =
@@ -71,5 +60,10 @@ object Chore {
         }
         result
       }
+
+
+    // Sync
+
+    def suspend[A](fa: => Chore[A]): Chore[A] = Suspend(() => try fa catch { case NonFatal(e) => Error(e) })
   }
 }
